@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JEV Video Moderation</title>
+<style>
+  :root { color-scheme: light; }
+  html, body { height: 100%; }
+  body {
+    background: #ffffff;
+    color: #111827;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    margin: 0;
+    padding: 24px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  #subtitle {
+    font-size: 13px;
+    color: #6b7280;
+    margin-bottom: 18px;
+    text-align: center;
+    max-width: 560px;
+  }
+
+  #layout { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; justify-content: center; }
+
+  #videoWrap { position: relative; }
+  video {
+    width: 480px;
+    max-width: 90vw;
+    border-radius: 10px;
+    border: 1px solid #e5e7eb;
+    background: #000;
+    transform: scaleX(-1);
+  }
+
+  #statusBadge {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 700;
+    color: white;
+    background: #6b7280;
+    transition: background 0.2s ease;
+  }
+
+  #panel { width: 320px; max-width: 90vw; }
+  #panel h3 { font-size: 13px; margin: 0 0 8px; color: #374151; }
+
+  #card {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 14px;
+    min-height: 90px;
+  }
+  #cardLabel { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+  #cardText { font-size: 14px; color: #374151; font-style: italic; }
+  #cardMeta { font-size: 11px; color: #9ca3af; margin-top: 8px; }
+
+  .bar-row { display: flex; align-items: center; gap: 6px; margin: 8px 0 2px; }
+  .bar-label { width: 90px; font-size: 11px; color: #374151; }
+  .bar-track { flex: 1; height: 8px; background: #f3f4f6; border-radius: 6px; overflow: hidden; }
+  .bar-fill { height: 100%; background: #2563eb; }
+  .bar-pct { width: 34px; text-align: right; font-size: 11px; color: #6b7280; }
+
+  .controls { display: flex; gap: 8px; margin: 16px 0; }
+  button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 18px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.secondary { background: #e5e7eb; color: #111827; }
+  button:disabled { background: #9ca3af; cursor: not-allowed; }
+
+  #log {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 6px 10px;
+  }
+  .log-row {
+    font-size: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid #f3f4f6;
+  }
+  .log-row:last-child { border-bottom: none; }
+  .log-row .tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: white;
+    margin-right: 6px;
+  }
+</style>
+</head>
+<body>
+  <h1>JEV Video Moderation</h1>
+  <div id="subtitle">Webcam → GPT vision transcribes handwritten signs → JEV classifies them live: Safe, Toxic, Prompt Injection, or PII.</div>
+
+  <div id="layout">
+    <div id="videoWrap">
+      <video id="video" autoplay playsinline muted></video>
+      <div id="statusBadge">idle</div>
+    </div>
+
+    <div id="panel">
+      <h3>Latest read</h3>
+      <div id="card">
+        <div id="cardLabel">Waiting for first capture…</div>
+        <div id="cardText"></div>
+        <div id="cardMeta"></div>
+        <div id="bars"></div>
+      </div>
+
+      <div class="controls">
+        <button id="autoBtn" class="secondary">Pause</button>
+      </div>
+
+      <h3>Log</h3>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+
+  <script>
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const statusBadge = document.getElementById("statusBadge");
+    const cardLabel = document.getElementById("cardLabel");
+    const cardText = document.getElementById("cardText");
+    const cardMeta = document.getElementById("cardMeta");
+    const barsEl = document.getElementById("bars");
+    const autoBtn = document.getElementById("autoBtn");
+    const logEl = document.getElementById("log");
+
+    const STYLES = {
+      safe: { label: "🟢 Safe", color: "#16a34a" },
+      toxic: { label: "🔴 Toxic", color: "#dc2626" },
+      prompt_injection: { label: "🟠 Prompt Injection", color: "#ea580c" },
+      pii: { label: "🔴 PII Detected", color: "#be123c" },
+      none: { label: "No text detected", color: "#6b7280" },
+    };
+
+    let ws;
+    let pending = false;
+    let autoRunning = false;
+    let frameCounter = 0;
+
+    function connect() {
+      const protocol = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${protocol}://${location.host}/ws`);
+      ws.onmessage = onMessage;
+      ws.onopen = maybeStartAuto;
+      ws.onclose = () => setTimeout(connect, 1000);
+    }
+    connect();
+
+    let cameraReady = false;
+
+    async function initCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          cameraReady = true;
+          maybeStartAuto();
+        };
+      } catch (err) {
+        cardLabel.textContent = "Camera access denied";
+        cardText.textContent = String(err);
+      }
+    }
+    initCamera();
+
+    function maybeStartAuto() {
+      if (!cameraReady || !ws || ws.readyState !== WebSocket.OPEN || autoRunning) return;
+      autoRunning = true;
+      autoBtn.textContent = "Pause";
+      captureFrame();
+    }
+
+    function captureFrame() {
+      if (!ws || ws.readyState !== WebSocket.OPEN || pending) return;
+      ctx.save();
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+      const id = `f${++frameCounter}`;
+      pending = true;
+      statusBadge.textContent = "analyzing…";
+      statusBadge.style.background = "#6b7280";
+      ws.send(JSON.stringify({ type: "frame", id, image: dataUrl }));
+    }
+
+    function onMessage(event) {
+      const msg = JSON.parse(event.data);
+      if (msg.type !== "result") return;
+      pending = false;
+
+      const key = msg.category || "none";
+      const style = STYLES[key] || STYLES.none;
+
+      statusBadge.textContent = style.label;
+      statusBadge.style.background = style.color;
+
+      cardLabel.textContent = style.label;
+      cardLabel.style.color = style.color;
+      cardText.textContent = msg.text ? `"${msg.text}"` : "(no readable text)";
+      cardMeta.textContent = `${msg.elapsed_ms}ms`;
+
+      renderBars(msg.probabilities, msg.category);
+      logRow(style, msg.text, msg.elapsed_ms);
+
+      if (autoRunning) setTimeout(captureFrame, 1200);
+    }
+
+    function renderBars(probabilities, chosen) {
+      if (!probabilities) {
+        barsEl.innerHTML = "";
+        return;
+      }
+      barsEl.innerHTML = Object.entries(probabilities)
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, p]) => {
+          const pct = Math.round(p * 100);
+          const color = k === chosen ? (STYLES[k] || STYLES.none).color : "#93c5fd";
+          return `
+            <div class="bar-row">
+              <div class="bar-label">${k}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div>
+              <div class="bar-pct">${pct}%</div>
+            </div>`;
+        })
+        .join("");
+    }
+
+    function logRow(style, text, elapsedMs) {
+      const row = document.createElement("div");
+      row.className = "log-row";
+      const snippet = text ? (text.length > 40 ? text.slice(0, 40) + "…" : text) : "(no text)";
+      row.innerHTML = `<span class="tag" style="background:${style.color}">${style.label}</span>"${snippet}" · ${elapsedMs}ms`;
+      logEl.appendChild(row);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    autoBtn.addEventListener("click", () => {
+      autoRunning = !autoRunning;
+      autoBtn.textContent = autoRunning ? "Pause" : "Resume";
+      if (autoRunning) captureFrame();
+    });
+  </script>
+</body>
+</html>

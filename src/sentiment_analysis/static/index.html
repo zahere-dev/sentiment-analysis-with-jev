@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JEV Sentiment Grid</title>
+<style>
+  :root {
+    color-scheme: light;
+  }
+  html, body {
+    height: 100%;
+  }
+  body {
+    background: #ffffff;
+    color: #111827;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    margin: 0;
+    padding: 24px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0 0 16px;
+  }
+  .controls {
+    display: flex;
+    align-items: end;
+    gap: 16px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  label {
+    font-size: 12px;
+    color: #6b7280;
+  }
+  input {
+    background: #ffffff;
+    border: 1px solid #d1d5db;
+    color: #111827;
+    border-radius: 6px;
+    padding: 6px 10px;
+    width: 110px;
+  }
+  button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 18px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:disabled {
+    background: #374151;
+    cursor: not-allowed;
+  }
+  .legend {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 16px;
+    font-size: 12px;
+    color: #9ca3af;
+  }
+  .swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  #status {
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: #6b7280;
+  }
+  #grid {
+    display: grid;
+    gap: 3px;
+    flex: 1;
+    min-height: 0;
+    align-content: start;
+    justify-content: start;
+  }
+  .cell {
+    background: #e5e7eb;
+    border-radius: 2px;
+    transition: background 0.2s ease;
+  }
+  .cell.pending {
+    background: repeating-linear-gradient(45deg, #e5e7eb, #e5e7eb 4px, #d1d5db 4px, #d1d5db 8px);
+  }
+</style>
+</head>
+<body>
+  <h1>JEV Sentiment Analysis — Live Grid</h1>
+
+  <div class="controls">
+    <div class="field">
+      <label for="reviews">Reviews</label>
+      <input id="reviews" type="number" min="1" value="100" />
+    </div>
+    <div class="field">
+      <label for="workers">Workers</label>
+      <input id="workers" type="number" min="1" value="8" />
+    </div>
+    <button id="run">Run</button>
+    <span id="totalLabel" style="font-size:12px;color:#6b7280;"></span>
+  </div>
+
+  <div class="legend">
+    <span><span class="swatch" style="background:#22c55e"></span>positive</span>
+    <span><span class="swatch" style="background:#ef4444"></span>negative</span>
+    <span><span class="swatch" style="background:#9ca3af"></span>neutral</span>
+    <span><span class="swatch" style="background:#111827;border:1px solid #374151"></span>mismatch</span>
+  </div>
+
+  <div id="status">Idle</div>
+  <div id="grid"></div>
+
+  <script>
+    const gridEl = document.getElementById("grid");
+    const statusEl = document.getElementById("status");
+    const runBtn = document.getElementById("run");
+    const reviewsInput = document.getElementById("reviews");
+    const workersInput = document.getElementById("workers");
+    const totalLabel = document.getElementById("totalLabel");
+
+    let ws = null;
+    let cells = {};
+    let total = 0;
+    let done = 0;
+    let correct = 0;
+    let startTime = 0;
+
+    fetch("/api/meta")
+      .then((r) => r.json())
+      .then((d) => {
+        totalLabel.textContent = `${d.total.toLocaleString()} rows available`;
+        reviewsInput.max = d.total;
+      });
+
+    const GAP = 3;
+
+    function layoutGrid(n) {
+      if (!n) return;
+      const width = gridEl.clientWidth;
+      const height = gridEl.clientHeight;
+      const guess = Math.sqrt((n * width) / height);
+      let bestCols = 1;
+      let bestSize = 0;
+      const lo = Math.max(1, Math.floor(guess - 25));
+      const hi = Math.min(n, Math.ceil(guess + 25));
+      for (let cols = lo; cols <= hi; cols++) {
+        const rows = Math.ceil(n / cols);
+        const sizeW = (width - (cols - 1) * GAP) / cols;
+        const sizeH = (height - (rows - 1) * GAP) / rows;
+        const size = Math.min(sizeW, sizeH);
+        if (size > bestSize) {
+          bestSize = size;
+          bestCols = cols;
+        }
+      }
+      gridEl.style.gridTemplateColumns = `repeat(${bestCols}, ${bestSize}px)`;
+      gridEl.style.gridAutoRows = `${bestSize}px`;
+    }
+
+    window.addEventListener("resize", () => layoutGrid(total));
+
+    function connect() {
+      const protocol = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${protocol}://${location.host}/ws`);
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === "init") {
+          gridEl.innerHTML = "";
+          cells = {};
+          total = msg.ids.length;
+          done = 0;
+          correct = 0;
+          startTime = performance.now();
+          layoutGrid(total);
+          msg.ids.forEach((id) => {
+            const cell = document.createElement("div");
+            cell.className = "cell pending";
+            cell.title = `#${id} pending`;
+            gridEl.appendChild(cell);
+            cells[id] = cell;
+          });
+          statusEl.textContent = `Running 0 / ${total}`;
+        }
+
+        if (msg.type === "result") {
+          const cell = cells[msg.id];
+          if (cell) {
+            cell.classList.remove("pending");
+            cell.style.background = msg.color;
+            cell.title = `#${msg.id}\ngolden: ${msg.golden}\npredicted: ${msg.predicted}\nmatch: ${msg.match}\n${msg.summary}`;
+          }
+          done += 1;
+          if (msg.match) correct += 1;
+          statusEl.textContent = `Running ${done} / ${total} — accuracy so far: ${((correct / done) * 100).toFixed(1)}%`;
+        }
+
+        if (msg.type === "done") {
+          const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+          statusEl.textContent = `Done — ${correct} / ${total} correct (${((correct / total) * 100).toFixed(1)}%) — ${elapsed}s`;
+          runBtn.disabled = false;
+        }
+      };
+
+      ws.onclose = () => {
+        runBtn.disabled = false;
+      };
+    }
+
+    runBtn.addEventListener("click", () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        connect();
+        ws.addEventListener("open", startRun, { once: true });
+      } else {
+        startRun();
+      }
+    });
+
+    function startRun() {
+      runBtn.disabled = true;
+      ws.send(
+        JSON.stringify({
+          limit: parseInt(reviewsInput.value, 10),
+          workers: parseInt(workersInput.value, 10),
+        })
+      );
+    }
+  </script>
+</body>
+</html>

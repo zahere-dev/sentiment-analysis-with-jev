@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JEV Maze Snake</title>
+<style>
+  :root { color-scheme: light; }
+  html, body { height: 100%; }
+  body {
+    background: #ffffff;
+    color: #111827;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    margin: 0;
+    padding: 24px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  #subtitle { font-size: 13px; color: #6b7280; margin-bottom: 16px; text-align: center; max-width: 520px; }
+
+  #layout { display: flex; gap: 20px; align-items: flex-start; }
+  #board {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: #ffffff;
+  }
+
+  #panel { width: 260px; font-size: 13px; }
+  #panel h3 { font-size: 13px; margin: 0 0 8px; color: #374151; }
+  #stats { color: #6b7280; margin-bottom: 14px; line-height: 1.7; }
+  #stats b { color: #111827; }
+
+  .bar-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .bar-label { width: 18px; font-weight: 600; color: #374151; }
+  .bar-track { flex: 1; height: 10px; background: #f3f4f6; border-radius: 6px; overflow: hidden; }
+  .bar-fill { height: 100%; background: #2563eb; }
+  .bar-fill.chosen { background: #22c55e; }
+  .bar-pct { width: 38px; text-align: right; color: #6b7280; font-size: 11px; }
+
+  #decisionNote { color: #9ca3af; font-style: italic; }
+
+  .controls { display: flex; gap: 8px; margin-top: 18px; }
+  button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 18px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.secondary { background: #e5e7eb; color: #111827; }
+  button:disabled { background: #9ca3af; cursor: not-allowed; }
+
+  #banner {
+    margin-top: 14px;
+    font-size: 14px;
+    color: #16a34a;
+    font-weight: 600;
+    min-height: 20px;
+  }
+
+  #log {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 6px 10px;
+  }
+  .log-row {
+    font-size: 11px;
+    color: #6b7280;
+    padding: 4px 0;
+    border-bottom: 1px solid #f3f4f6;
+  }
+  .log-row:last-child { border-bottom: none; }
+  .log-row b { color: #111827; }
+</style>
+</head>
+<body>
+  <h1>JEV Maze Snake</h1>
+  <div id="subtitle">At every junction, JEV is asked which direction makes the most progress toward the goal. Straight corridors move without calling the API — JEV only fires when there's an actual decision.</div>
+
+  <div id="layout">
+    <canvas id="board" width="480" height="480"></canvas>
+
+    <div id="panel">
+      <h3>Live decision</h3>
+      <div id="decision"><span id="decisionNote">No decision yet.</span></div>
+
+      <h3 style="margin-top:16px;">Run stats</h3>
+      <div id="stats">
+        Steps: <b id="stepsVal">0</b><br />
+        JEV calls: <b id="callsVal">0</b>
+      </div>
+
+      <div class="controls">
+        <button id="stepBtn">Step</button>
+        <button id="autoBtn" class="secondary">Auto-Solve</button>
+        <button id="resetBtn" class="secondary">New Maze</button>
+      </div>
+      <div id="banner"></div>
+
+      <h3 style="margin-top:16px;">Decision log</h3>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("board");
+    const ctx = canvas.getContext("2d");
+    const stepBtn = document.getElementById("stepBtn");
+    const autoBtn = document.getElementById("autoBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const banner = document.getElementById("banner");
+    const stepsVal = document.getElementById("stepsVal");
+    const callsVal = document.getElementById("callsVal");
+    const decisionEl = document.getElementById("decision");
+    const logEl = document.getElementById("log");
+
+    let ws, cell, width, height, openDirs, start, goal, position, path, done;
+    let decisions = [];
+    let autoRunning = false;
+
+    function connect() {
+      const protocol = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${protocol}://${location.host}/ws`);
+      ws.onmessage = onMessage;
+      ws.onclose = () => setTimeout(connect, 1000);
+      ws.onopen = () => setControls(false);
+    }
+
+    function setControls(disabled) {
+      stepBtn.disabled = disabled;
+      autoBtn.disabled = disabled;
+    }
+
+    function onMessage(event) {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === "maze") {
+        width = msg.width;
+        height = msg.height;
+        openDirs = msg.open;
+        start = msg.start;
+        goal = msg.goal;
+        position = { ...start };
+        path = [{ ...start }];
+        decisions = [];
+        done = false;
+        cell = canvas.width / width;
+        banner.textContent = "";
+        stepsVal.textContent = "0";
+        callsVal.textContent = "0";
+        decisionEl.innerHTML = `<span id="decisionNote">No decision yet.</span>`;
+        logEl.innerHTML = "";
+        draw();
+        return;
+      }
+
+      if (msg.type === "move") {
+        position = msg.to;
+        path.push(msg.to);
+        stepsVal.textContent = msg.steps;
+        callsVal.textContent = msg.jevCalls;
+
+        if (msg.forced) {
+          decisionEl.innerHTML = `<span id="decisionNote">Corridor — no decision needed, moved ${msg.direction}.</span>`;
+        } else {
+          decisions.push({ from: msg.from, direction: msg.direction, probabilities: msg.probabilities });
+          renderDecision(msg.direction, msg.probabilities, msg.confidence);
+          logRow(msg.steps, msg.from, msg.direction, msg.probabilities);
+        }
+
+        draw();
+
+        if (msg.reachedGoal) {
+          done = true;
+          autoRunning = false;
+          banner.textContent = `Reached the goal in ${msg.steps} steps (${msg.jevCalls} JEV calls).`;
+          setControls(true);
+        } else if (autoRunning) {
+          setTimeout(() => ws.send(JSON.stringify({ type: "step" })), 220);
+        }
+        return;
+      }
+
+      if (msg.type === "stuck") {
+        autoRunning = false;
+        banner.textContent = `Stuck after ${msg.steps} steps.`;
+        banner.style.color = "#ef4444";
+        setControls(true);
+      }
+
+      if (msg.type === "done") {
+        // stats already updated on the "move" message
+      }
+    }
+
+    function renderDecision(chosen, probabilities, confidence) {
+      if (!probabilities) {
+        decisionEl.innerHTML = `<span id="decisionNote">Chose ${chosen}.</span>`;
+        return;
+      }
+      const rows = Object.entries(probabilities)
+        .sort((a, b) => b[1] - a[1])
+        .map(([dir, p]) => {
+          const pct = Math.round(p * 100);
+          const cls = dir === chosen ? "chosen" : "";
+          return `
+            <div class="bar-row">
+              <div class="bar-label">${dir}</div>
+              <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>
+              <div class="bar-pct">${pct}%</div>
+            </div>`;
+        })
+        .join("");
+      const confText = confidence !== null && confidence !== undefined ? ` · confidence ${(confidence * 100).toFixed(0)}%` : "";
+      decisionEl.innerHTML = rows + `<div style="margin-top:4px;color:#6b7280;font-size:11px;">chose ${chosen}${confText}</div>`;
+    }
+
+    function logRow(step, from, direction, probabilities) {
+      const top = probabilities
+        ? Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0]
+        : null;
+      const pctText = top ? ` (${Math.round(top[1] * 100)}%)` : "";
+      const row = document.createElement("div");
+      row.className = "log-row";
+      row.innerHTML = `#${step} <b>(${from.x},${from.y})</b> → <b>${direction}</b>${pctText}`;
+      logEl.appendChild(row);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function wallSegments() {
+      const segments = [];
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const dirs = openDirs[`${x},${y}`] || [];
+          if (!dirs.includes("N")) segments.push([x, y, x + 1, y]);
+          if (!dirs.includes("W")) segments.push([x, y, x, y + 1]);
+          if (x === width - 1) segments.push([x + 1, y, x + 1, y + 1]);
+          if (y === height - 1) segments.push([x, y + 1, x + 1, y + 1]);
+        }
+      }
+      return segments;
+    }
+
+    function draw() {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // goal
+      ctx.fillStyle = "#fde68a";
+      ctx.fillRect(goal.x * cell, goal.y * cell, cell, cell);
+
+      // path trail
+      ctx.strokeStyle = "#93c5fd";
+      ctx.lineWidth = Math.max(2, cell * 0.18);
+      ctx.beginPath();
+      path.forEach((p, i) => {
+        const px = p.x * cell + cell / 2;
+        const py = p.y * cell + cell / 2;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+
+      // start marker
+      ctx.fillStyle = "#2563eb";
+      ctx.beginPath();
+      ctx.arc(start.x * cell + cell / 2, start.y * cell + cell / 2, cell * 0.15, 0, Math.PI * 2);
+      ctx.fill();
+
+      // junction markers — every point where JEV actually made a decision
+      ctx.fillStyle = "#7c3aed";
+      decisions.forEach((d) => {
+        ctx.beginPath();
+        ctx.arc(d.from.x * cell + cell / 2, d.from.y * cell + cell / 2, cell * 0.16, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // walls
+      ctx.strokeStyle = "#111827";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      wallSegments().forEach(([x1, y1, x2, y2]) => {
+        ctx.moveTo(x1 * cell, y1 * cell);
+        ctx.lineTo(x2 * cell, y2 * cell);
+      });
+      ctx.stroke();
+
+      // snake head
+      ctx.fillStyle = done ? "#16a34a" : "#ef4444";
+      ctx.beginPath();
+      ctx.arc(position.x * cell + cell / 2, position.y * cell + cell / 2, cell * 0.28, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    stepBtn.addEventListener("click", () => {
+      autoRunning = false;
+      ws.send(JSON.stringify({ type: "step" }));
+    });
+
+    autoBtn.addEventListener("click", () => {
+      autoRunning = true;
+      ws.send(JSON.stringify({ type: "step" }));
+    });
+
+    resetBtn.addEventListener("click", () => {
+      autoRunning = false;
+      banner.textContent = "";
+      banner.style.color = "#16a34a";
+      setControls(true);
+      ws.close();
+    });
+
+    connect();
+  </script>
+</body>
+</html>

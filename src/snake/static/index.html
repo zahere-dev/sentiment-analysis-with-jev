@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JEV Snake</title>
+<style>
+  :root { color-scheme: light; }
+  html, body { height: 100%; }
+  body {
+    background: #ffffff;
+    color: #111827;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    margin: 0;
+    padding: 24px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  #subtitle { font-size: 13px; color: #6b7280; margin-bottom: 20px; text-align: center; max-width: 480px; }
+
+  .legend {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 12px;
+    font-size: 12px;
+    color: #6b7280;
+  }
+  .swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  /* Loading phase */
+  #loading { width: 480px; max-width: 90vw; }
+  #loadingStatus { font-size: 13px; color: #6b7280; margin-bottom: 10px; }
+  #loadGrid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 4px;
+    margin-bottom: 16px;
+  }
+  .food-cell {
+    aspect-ratio: 1 / 1;
+    border-radius: 4px;
+    background: repeating-linear-gradient(45deg, #e5e7eb, #e5e7eb 5px, #d1d5db 5px, #d1d5db 10px);
+    transition: background 0.25s ease;
+  }
+  .food-cell.positive { background: #22c55e; }
+  .food-cell.negative { background: #ef4444; }
+  .food-cell.neutral { background: #9ca3af; }
+
+  #startBtn {
+    display: block;
+    margin: 0 auto;
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 24px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  #startBtn:disabled { background: #9ca3af; cursor: not-allowed; }
+
+  /* Game phase */
+  #gameWrap { display: none; flex-direction: column; align-items: center; }
+  #hud {
+    display: flex;
+    justify-content: space-between;
+    width: 440px;
+    max-width: 90vw;
+    font-size: 14px;
+    margin-bottom: 8px;
+  }
+  #board {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: #fafafa;
+  }
+  #hint { font-size: 12px; color: #9ca3af; margin-top: 10px; }
+
+  #overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(255,255,255,0.92);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    text-align: center;
+    padding: 24px;
+  }
+  #overlay h2 { margin: 0 0 8px; font-size: 22px; }
+  #overlay p { color: #6b7280; margin: 4px 0 16px; max-width: 380px; }
+  #overlay button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 24px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+  <h1>JEV Snake</h1>
+  <div id="subtitle">Food is classified live by JEV. Green (positive) makes you grow, gray (neutral) is a small bonus, red (negative) ends the run.</div>
+
+  <div class="legend">
+    <span><span class="swatch" style="background:#22c55e"></span>positive — grow</span>
+    <span><span class="swatch" style="background:#9ca3af"></span>neutral — small bonus</span>
+    <span><span class="swatch" style="background:#ef4444"></span>negative — game over</span>
+  </div>
+
+  <div id="loading">
+    <div id="loadingStatus">Classifying food with JEV…</div>
+    <div id="loadGrid"></div>
+    <button id="startBtn" disabled>Start Game</button>
+  </div>
+
+  <div id="gameWrap">
+    <div id="hud">
+      <span id="score">Score: 0</span>
+      <span id="queueInfo">Food ready: 0</span>
+    </div>
+    <canvas id="board" width="440" height="440"></canvas>
+    <div id="hint">Arrow keys / WASD to move</div>
+  </div>
+
+  <div id="overlay">
+    <h2 id="overlayTitle">Game Over</h2>
+    <p id="overlayText"></p>
+    <button id="restartBtn">Play Again</button>
+  </div>
+
+  <script>
+    const GRID = 20;
+    const CELL = 22;
+    const TICK_MS = 140;
+    const INITIAL_BATCH = 24;
+    const RESTOCK_BATCH = 15;
+    const RESTOCK_THRESHOLD = 5;
+
+    const loadGrid = document.getElementById("loadGrid");
+    const loadingStatus = document.getElementById("loadingStatus");
+    const startBtn = document.getElementById("startBtn");
+    const gameWrap = document.getElementById("gameWrap");
+    const scoreEl = document.getElementById("score");
+    const queueInfoEl = document.getElementById("queueInfo");
+    const canvas = document.getElementById("board");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const overlayTitle = document.getElementById("overlayTitle");
+    const overlayText = document.getElementById("overlayText");
+    const restartBtn = document.getElementById("restartBtn");
+
+    let ws;
+    const itemsById = {};
+    const resolvedQueue = [];
+    let initialTotal = 0;
+    let initialDone = 0;
+
+    function connectWs() {
+      const protocol = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${protocol}://${location.host}/ws`);
+      ws.onopen = () => requestInitialBatch();
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "result") {
+          const item = itemsById[msg.id];
+          if (!item) return;
+          item.sentiment = msg.sentiment;
+          if (item.cellEl) {
+            item.cellEl.classList.remove("positive", "negative", "neutral");
+            item.cellEl.classList.add(["positive", "negative", "neutral"].includes(msg.sentiment) ? msg.sentiment : "neutral");
+            item.cellEl.title = `${msg.sentiment}: ${item.text}`;
+            initialDone += 1;
+            loadingStatus.textContent = `Classifying food with JEV… (${initialDone}/${initialTotal})`;
+          }
+          resolvedQueue.push(msg.id);
+          queueInfoEl.textContent = `Food ready: ${resolvedQueue.length}`;
+        }
+        if (msg.type === "batch_done") {
+          if (initialDone >= initialTotal) {
+            startBtn.disabled = false;
+            loadingStatus.textContent = "Ready! Click Start Game.";
+          }
+        }
+      };
+      ws.onclose = () => setTimeout(connectWs, 1000);
+    }
+
+    async function requestInitialBatch() {
+      const res = await fetch(`/api/food?count=${INITIAL_BATCH}`);
+      const data = await res.json();
+      initialTotal = data.items.length;
+
+      data.items.forEach((item) => {
+        const cell = document.createElement("div");
+        cell.className = "food-cell";
+        cell.title = "pending…";
+        loadGrid.appendChild(cell);
+        itemsById[item.id] = { text: item.text, sentiment: null, cellEl: cell };
+      });
+
+      ws.send(JSON.stringify({ items: data.items }));
+    }
+
+    async function restock() {
+      const res = await fetch(`/api/food?count=${RESTOCK_BATCH}`);
+      const data = await res.json();
+      data.items.forEach((item) => {
+        itemsById[item.id] = { text: item.text, sentiment: null, cellEl: null };
+      });
+      ws.send(JSON.stringify({ items: data.items }));
+    }
+
+    connectWs();
+
+    // ---- Game ----
+    let snake, direction, nextDirection, score, food, tickHandle, gameActive;
+
+    function popFood() {
+      const id = resolvedQueue.shift();
+      if (!id) return null;
+      const item = itemsById[id];
+      queueInfoEl.textContent = `Food ready: ${resolvedQueue.length}`;
+      if (resolvedQueue.length < RESTOCK_THRESHOLD) restock();
+      return { id, text: item.text, sentiment: item.sentiment };
+    }
+
+    function randomEmptyCell() {
+      while (true) {
+        const x = Math.floor(Math.random() * GRID);
+        const y = Math.floor(Math.random() * GRID);
+        if (!snake.some((seg) => seg.x === x && seg.y === y)) return { x, y };
+      }
+    }
+
+    function spawnFood() {
+      const picked = popFood();
+      if (!picked) {
+        setTimeout(spawnFood, 150);
+        return;
+      }
+      const pos = randomEmptyCell();
+      food = { ...picked, ...pos };
+    }
+
+    function resetGame() {
+      snake = [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
+      direction = { x: 1, y: 0 };
+      nextDirection = direction;
+      score = 0;
+      gameActive = true;
+      scoreEl.textContent = `Score: ${score}`;
+      overlay.style.display = "none";
+      spawnFood();
+      clearInterval(tickHandle);
+      tickHandle = setInterval(tick, TICK_MS);
+      draw();
+    }
+
+    function endGame(title, text) {
+      gameActive = false;
+      clearInterval(tickHandle);
+      overlayTitle.textContent = title;
+      overlayText.textContent = text;
+      overlay.style.display = "flex";
+    }
+
+    function tick() {
+      direction = nextDirection;
+      const head = { x: snake[0].x + direction.x, y: snake[0].y + direction.y };
+
+      if (head.x < 0 || head.x >= GRID || head.y < 0 || head.y >= GRID) {
+        endGame("Game Over", "You hit the wall.");
+        return;
+      }
+      if (snake.some((seg) => seg.x === head.x && seg.y === head.y)) {
+        endGame("Game Over", "You ran into yourself.");
+        return;
+      }
+
+      snake.unshift(head);
+
+      if (food && head.x === food.x && head.y === food.y) {
+        if (food.sentiment === "negative") {
+          endGame("Poisoned!", `JEV flagged this as negative: "${food.text}"`);
+          return;
+        }
+        if (food.sentiment === "positive") {
+          score += 10;
+        } else {
+          score += 2;
+          snake.pop(); // neutral: no growth
+        }
+        scoreEl.textContent = `Score: ${score}`;
+        spawnFood();
+      } else {
+        snake.pop();
+      }
+
+      draw();
+    }
+
+    function draw() {
+      ctx.fillStyle = "#fafafa";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      if (food) {
+        const colors = { positive: "#22c55e", negative: "#ef4444", neutral: "#9ca3af" };
+        ctx.fillStyle = colors[food.sentiment] || "#9ca3af";
+        ctx.beginPath();
+        ctx.arc(food.x * CELL + CELL / 2, food.y * CELL + CELL / 2, CELL / 2.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      snake.forEach((seg, i) => {
+        ctx.fillStyle = i === 0 ? "#2563eb" : "#93c5fd";
+        ctx.fillRect(seg.x * CELL + 1, seg.y * CELL + 1, CELL - 2, CELL - 2);
+      });
+    }
+
+    const keyMap = {
+      ArrowUp: { x: 0, y: -1 }, w: { x: 0, y: -1 }, W: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 }, s: { x: 0, y: 1 }, S: { x: 0, y: 1 },
+      ArrowLeft: { x: -1, y: 0 }, a: { x: -1, y: 0 }, A: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 }, d: { x: 1, y: 0 }, D: { x: 1, y: 0 },
+    };
+
+    document.addEventListener("keydown", (e) => {
+      if (!gameActive) return;
+      const dir = keyMap[e.key];
+      if (!dir) return;
+      if (dir.x === -direction.x && dir.y === -direction.y) return; // no reverse
+      nextDirection = dir;
+      e.preventDefault();
+    });
+
+    startBtn.addEventListener("click", () => {
+      document.getElementById("loading").style.display = "none";
+      gameWrap.style.display = "flex";
+      resetGame();
+    });
+
+    restartBtn.addEventListener("click", resetGame);
+  </script>
+</body>
+</html>

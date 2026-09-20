@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JEV Chat Moderation</title>
+<style>
+  :root {
+    color-scheme: light;
+  }
+  html, body {
+    height: 100%;
+  }
+  body {
+    background: #ffffff;
+    color: #111827;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    margin: 0;
+    padding: 24px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    max-width: 640px;
+    margin-inline: auto;
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0 0 4px;
+  }
+  #subtitle {
+    font-size: 13px;
+    color: #6b7280;
+    margin-bottom: 16px;
+  }
+  #chat {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: #fafafa;
+  }
+  .bubble {
+    max-width: 75%;
+    padding: 10px 14px;
+    border-radius: 14px;
+    font-size: 14px;
+    line-height: 1.4;
+    border: 1px solid transparent;
+  }
+  .bubble.user {
+    align-self: flex-end;
+    background: #dbeafe;
+    border-color: #bfdbfe;
+  }
+  .bubble.assistant {
+    align-self: flex-start;
+    background: #e5e7eb;
+  }
+  .bubble.streaming {
+    background: repeating-linear-gradient(45deg, #e5e7eb, #e5e7eb 6px, #d1d5db 6px, #d1d5db 12px);
+    color: #374151;
+  }
+  .bubble.done {
+    background: #dcfce7;
+    border-color: #86efac;
+  }
+  .bubble.blocked {
+    background: #fee2e2;
+    border-color: #fca5a5;
+  }
+  .meta {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #6b7280;
+  }
+  .blocked-text {
+    font-style: italic;
+    color: #991b1b;
+  }
+  form {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  input[type="text"] {
+    flex: 1;
+    padding: 10px 14px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 14px;
+  }
+  button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0 20px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:disabled {
+    background: #9ca3af;
+    cursor: not-allowed;
+  }
+</style>
+</head>
+<body>
+  <h1>JEV Chat Moderation — Live</h1>
+  <div id="subtitle">OpenAI streams the reply instantly while JEV checks the input and output in parallel. A flagged message gets retracted mid-stream.</div>
+
+  <div id="chat"></div>
+
+  <form id="composer">
+    <input id="text" type="text" placeholder="Type a message…" autocomplete="off" />
+    <button id="send" type="submit">Send</button>
+  </form>
+
+  <script>
+    const chatEl = document.getElementById("chat");
+    const form = document.getElementById("composer");
+    const textInput = document.getElementById("text");
+    const sendBtn = document.getElementById("send");
+
+    let ws = null;
+    const assistantBubbles = {};
+    const startTimes = {};
+
+    function connect() {
+      const protocol = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${protocol}://${location.host}/ws`);
+
+      ws.onopen = () => {
+        sendBtn.disabled = false;
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        const bubble = assistantBubbles[msg.id];
+        if (!bubble) return;
+
+        if (msg.type === "token") {
+          bubble.textContent += msg.token;
+          chatEl.scrollTop = chatEl.scrollHeight;
+          return;
+        }
+
+        if (msg.type === "blocked") {
+          const elapsed = ((performance.now() - startTimes[msg.id]) / 1000).toFixed(2);
+          bubble.classList.remove("streaming");
+          bubble.classList.add("blocked");
+          const text = msg.message || `Response retracted — flagged as abusive (${msg.stage})`;
+          bubble.innerHTML = `<span class="blocked-text">${text}</span>`;
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          meta.textContent = `${elapsed}s`;
+          bubble.appendChild(meta);
+          chatEl.scrollTop = chatEl.scrollHeight;
+          return;
+        }
+
+        if (msg.type === "done") {
+          const elapsed = ((performance.now() - startTimes[msg.id]) / 1000).toFixed(2);
+          bubble.classList.remove("streaming");
+          bubble.classList.add("done");
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          meta.textContent = `moderated ✓ · ${elapsed}s`;
+          bubble.appendChild(meta);
+          chatEl.scrollTop = chatEl.scrollHeight;
+        }
+      };
+
+      ws.onclose = () => {
+        sendBtn.disabled = true;
+        setTimeout(connect, 1000);
+      };
+    }
+
+    connect();
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const text = textInput.value.trim();
+      if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+      const id = crypto.randomUUID();
+      startTimes[id] = performance.now();
+
+      const userBubble = document.createElement("div");
+      userBubble.className = "bubble user";
+      userBubble.textContent = text;
+      chatEl.appendChild(userBubble);
+
+      const assistantBubble = document.createElement("div");
+      assistantBubble.className = "bubble assistant streaming";
+      assistantBubble.textContent = "";
+      chatEl.appendChild(assistantBubble);
+      assistantBubbles[id] = assistantBubble;
+
+      chatEl.scrollTop = chatEl.scrollHeight;
+
+      ws.send(JSON.stringify({ id, text }));
+      textInput.value = "";
+    });
+  </script>
+</body>
+</html>
