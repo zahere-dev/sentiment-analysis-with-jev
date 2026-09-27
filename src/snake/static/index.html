@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>JEV Snake</title>
+<title>{{ENGINE}} Snake</title>
 <style>
   :root { color-scheme: light; }
   html, body { height: 100%; }
@@ -110,8 +110,8 @@
 </style>
 </head>
 <body>
-  <h1>JEV Snake</h1>
-  <div id="subtitle">Food is classified live by JEV. Green (positive) makes you grow, gray (neutral) is a small bonus, red (negative) ends the run.</div>
+  <h1>{{ENGINE}} Snake</h1>
+  <div id="subtitle">Food is classified live by {{ENGINE}}. Green (positive) makes you grow, gray (neutral) is a small bonus, red (negative) ends the run.</div>
 
   <div class="legend">
     <span><span class="swatch" style="background:#22c55e"></span>positive — grow</span>
@@ -120,7 +120,7 @@
   </div>
 
   <div id="loading">
-    <div id="loadingStatus">Classifying food with JEV…</div>
+    <div id="loadingStatus">Classifying food with {{ENGINE}}…</div>
     <div id="loadGrid"></div>
     <button id="startBtn" disabled>Start Game</button>
   </div>
@@ -182,7 +182,7 @@
             item.cellEl.classList.add(["positive", "negative", "neutral"].includes(msg.sentiment) ? msg.sentiment : "neutral");
             item.cellEl.title = `${msg.sentiment}: ${item.text}`;
             initialDone += 1;
-            loadingStatus.textContent = `Classifying food with JEV… (${initialDone}/${initialTotal})`;
+            loadingStatus.textContent = `Classifying food with {{ENGINE}}… (${initialDone}/${initialTotal})`;
           }
           resolvedQueue.push(msg.id);
           queueInfoEl.textContent = `Food ready: ${resolvedQueue.length}`;
@@ -293,7 +293,7 @@
 
       if (food && head.x === food.x && head.y === food.y) {
         if (food.sentiment === "negative") {
-          endGame("Poisoned!", `JEV flagged this as negative: "${food.text}"`);
+          endGame("Poisoned!", `{{ENGINE}} flagged this as negative: "${food.text}"`);
           return;
         }
         if (food.sentiment === "positive") {

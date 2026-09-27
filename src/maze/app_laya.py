@@ -3,16 +3,21 @@ import os
 import random
 from concurrent.futures import ThreadPoolExecutor
 
-import requests
-from dotenv import load_dotenv
+# Checkpoints are cached locally after the first run; skip the Hugging Face
+# Hub round-trip that otherwise happens on startup to re-validate the cache.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from laya import Router
 
-load_dotenv()
-
-TYPESAFE_API_KEY = os.environ["TYPESAFE_API_KEY"]
-API_URL = "https://api.typesafe.ai/v1/systemone"
+# Each predict() call is real CPU compute; pin torch to a single thread per
+# call so parallelism (when it happens) comes from our own thread pool
+# rather than torch's internal thread pool fighting it. See
+# sentiment_analysis/app_laya.py for the full writeup.
+torch.set_num_threads(1)
 
 WIDTH = 12
 HEIGHT = 12
@@ -24,6 +29,9 @@ OPPOSITE = {"N": "S", "S": "N", "E": "W", "W": "E"}
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 executor = ThreadPoolExecutor(max_workers=8)
+
+# Loaded once at process startup and reused for every request.
+router = Router(preload=True)
 
 
 def generate_maze(width, height):
@@ -54,15 +62,8 @@ def open_directions(walls, cell):
     return [d for d, blocked in walls[cell].items() if not blocked]
 
 
-def call_jev(state, questions):
-    headers = {
-        "Authorization": f"Bearer {TYPESAFE_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {"state": state, "model": "jev-latest", "questions": questions}
-    response = requests.post(API_URL, headers=headers, json=payload)
-    response.raise_for_status()
-    return response.json()
+def call_laya(state, questions):
+    return router.predict(state, questions)
 
 
 async def choose_direction(x, y, goal, candidates):
@@ -91,7 +92,7 @@ async def choose_direction(x, y, goal, candidates):
     }
 
     loop = asyncio.get_event_loop()
-    response_json = await loop.run_in_executor(executor, call_jev, state, questions)
+    response_json = await loop.run_in_executor(executor, call_laya, state, questions)
     answer = response_json.get("answers", {}).get("move", {})
     return answer.get("choice"), answer.get("probabilities"), answer.get("confidence")
 
@@ -99,7 +100,7 @@ async def choose_direction(x, y, goal, candidates):
 @app.get("/")
 async def index():
     with open("static/index.html") as f:
-        return HTMLResponse(f.read().replace("{{ENGINE}}", "Jev"))
+        return HTMLResponse(f.read().replace("{{ENGINE}}", "Laya"))
 
 
 @app.websocket("/ws")

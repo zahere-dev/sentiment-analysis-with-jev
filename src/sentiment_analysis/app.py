@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncio
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from sentiment_analysis_with_jev import call_jev, extract_sentiment, load_rows
@@ -21,7 +21,8 @@ MISMATCH_COLOR = "#111827"
 
 @app.get("/")
 async def index():
-    return FileResponse("static/index.html")
+    with open("static/index.html") as f:
+        return HTMLResponse(f.read().replace("{{ENGINE}}", "Jev"))
 
 
 @app.get("/api/meta")

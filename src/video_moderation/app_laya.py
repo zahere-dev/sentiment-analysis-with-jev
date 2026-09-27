@@ -3,20 +3,28 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import requests
+# Checkpoints are cached locally after the first run; skip the Hugging Face
+# Hub round-trip that otherwise happens on startup to re-validate the cache.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from laya import Router
 from openai import AsyncOpenAI
 
 load_dotenv()
 
-TYPESAFE_API_KEY = os.environ["TYPESAFE_API_KEY"]
+# Each predict() call is real CPU compute; pin torch to a single thread per
+# call so parallelism (when it happens) comes from our own thread pool
+# rather than torch's internal thread pool fighting it. See
+# sentiment_analysis/app_laya.py for the full writeup.
+torch.set_num_threads(1)
+
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 OPENAI_VISION_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
-
-API_URL = "https://api.typesafe.ai/v1/systemone"
 
 TRANSCRIBE_PROMPT = (
     "Transcribe any handwritten or printed text visible in this image, "
@@ -63,6 +71,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 executor = ThreadPoolExecutor(max_workers=8)
 
+# Loaded once at process startup and reused for every request.
+router = Router(preload=True)
+
 
 async def transcribe_image(data_url):
     response = await openai_client.chat.completions.create(
@@ -81,20 +92,13 @@ async def transcribe_image(data_url):
     return (response.choices[0].message.content or "").strip()
 
 
-def call_jev(text):
-    headers = {
-        "Authorization": f"Bearer {TYPESAFE_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {"state": text, "model": "jev-latest", "questions": QUESTIONS}
-    response = requests.post(API_URL, headers=headers, json=payload)
-    response.raise_for_status()
-    return response.json()
+def call_laya(text):
+    return router.predict(text, QUESTIONS)
 
 
 async def moderate_text(text):
     loop = asyncio.get_event_loop()
-    response_json = await loop.run_in_executor(executor, call_jev, text)
+    response_json = await loop.run_in_executor(executor, call_laya, text)
     answer = response_json.get("answers", {}).get("category", {})
     return answer.get("choice"), answer.get("probabilities"), answer.get("confidence")
 
@@ -102,7 +106,7 @@ async def moderate_text(text):
 @app.get("/")
 async def index():
     with open("static/index.html") as f:
-        return HTMLResponse(f.read().replace("{{ENGINE}}", "Jev"))
+        return HTMLResponse(f.read().replace("{{ENGINE}}", "Laya"))
 
 
 @app.websocket("/ws")

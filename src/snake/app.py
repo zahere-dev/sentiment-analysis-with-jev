@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
@@ -73,7 +73,8 @@ async def classify(text):
 
 @app.get("/")
 async def index():
-    return FileResponse("static/index.html")
+    with open("static/index.html") as f:
+        return HTMLResponse(f.read().replace("{{ENGINE}}", "Jev"))
 
 
 @app.get("/api/food")

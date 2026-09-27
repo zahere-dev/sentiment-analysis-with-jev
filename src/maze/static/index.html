@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>JEV Maze Snake</title>
+<title>{{ENGINE}} Maze Snake</title>
 <style>
   :root { color-scheme: light; }
   html, body { height: 100%; }
@@ -80,8 +80,8 @@
 </style>
 </head>
 <body>
-  <h1>JEV Maze Snake</h1>
-  <div id="subtitle">At every junction, JEV is asked which direction makes the most progress toward the goal. Straight corridors move without calling the API — JEV only fires when there's an actual decision.</div>
+  <h1>{{ENGINE}} Maze Snake</h1>
+  <div id="subtitle">At every junction, {{ENGINE}} is asked which direction makes the most progress toward the goal. Straight corridors move without calling the API — {{ENGINE}} only fires when there's an actual decision.</div>
 
   <div id="layout">
     <canvas id="board" width="480" height="480"></canvas>
@@ -93,7 +93,7 @@
       <h3 style="margin-top:16px;">Run stats</h3>
       <div id="stats">
         Steps: <b id="stepsVal">0</b><br />
-        JEV calls: <b id="callsVal">0</b>
+        {{ENGINE}} calls: <b id="callsVal">0</b>
       </div>
 
       <div class="controls">
@@ -164,7 +164,7 @@
         position = msg.to;
         path.push(msg.to);
         stepsVal.textContent = msg.steps;
-        callsVal.textContent = msg.jevCalls;
+        callsVal.textContent = msg.engineCalls;
 
         if (msg.forced) {
           decisionEl.innerHTML = `<span id="decisionNote">Corridor — no decision needed, moved ${msg.direction}.</span>`;
@@ -179,7 +179,7 @@
         if (msg.reachedGoal) {
           done = true;
           autoRunning = false;
-          banner.textContent = `Reached the goal in ${msg.steps} steps (${msg.jevCalls} JEV calls).`;
+          banner.textContent = `Reached the goal in ${msg.steps} steps (${msg.engineCalls} {{ENGINE}} calls).`;
           setControls(true);
         } else if (autoRunning) {
           setTimeout(() => ws.send(JSON.stringify({ type: "step" })), 220);
@@ -273,7 +273,7 @@
       ctx.arc(start.x * cell + cell / 2, start.y * cell + cell / 2, cell * 0.15, 0, Math.PI * 2);
       ctx.fill();
 
-      // junction markers — every point where JEV actually made a decision
+      // junction markers — every point where {{ENGINE}} actually made a decision
       ctx.fillStyle = "#7c3aed";
       decisions.forEach((d) => {
         ctx.beginPath();
